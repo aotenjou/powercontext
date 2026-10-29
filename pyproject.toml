@@ -37,6 +37,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+pdf = ["pypdf>=6,<7"]
 code = [
     "tree-sitter==0.26.0",
     "tree-sitter-go==0.25.0",
@@ -127,7 +128,7 @@ notebooks = [
     "playwright>=1.55,<2",
 ]
 dev = [
-    "powercontext[code]",
+    "powercontext[code,pdf]",
     "datamodel-code-generator==0.64.0",
     "powercontext[cli,server]",
     "powercontext-langchain",
@@ -178,6 +179,8 @@ extra-paths = [
 
 [tool.ty.src]
 exclude = [
+    # Public acceptance tests have their own fixed environment and intentionally invalid inputs.
+    "competition",
     # Optional Jupyter dependencies and notebook state are validated by notebooks-test.
     "examples/jupyter",
     "e2e/bub",

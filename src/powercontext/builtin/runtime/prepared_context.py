@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from itertools import chain
@@ -106,6 +109,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[PreparedEvidenceFragment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,40 @@ class MemoryEntryAddress:
     memory: ArtifactAddress
     entry_id: str
     entry_version_id: str
+
+
+@dataclass(frozen=True)
+class PreparedEvidenceFragment:
+    """A literal half-open character range in an exact scoped Memory version."""
+
+    address: MemoryEntryAddress
+    start: int
+    end: int
+    text: str
+
+
+def _evidence_fragments(groups: Sequence[PreparedMemoryCandidates]) -> list[PreparedEvidenceFragment]:
+    """Split candidate bodies into literal sentence ranges with exact scoped identities."""
+    candidates = []
+    for group in groups:
+        for hit in group.hits:
+            address = MemoryEntryAddress(
+                memory=ArtifactAddress(scope_id=group.scope_id, artifact=hit.memory_ref),
+                entry_id=hit.entry_id,
+                entry_version_id=hit.entry_version_id,
+            )
+            start = 0
+            for boundary in re.finditer(
+                r"(?<=[.!?])\s+|(?<=[。！？])|\n+",  # noqa: RUF001 - recognize CJK sentence punctuation
+                hit.text,
+            ):
+                end = boundary.start()
+                if hit.text[start:end].strip():
+                    candidates.append(PreparedEvidenceFragment(address, start, end, hit.text[start:end]))
+                start = boundary.end()
+            if hit.text[start:].strip():
+                candidates.append(PreparedEvidenceFragment(address, start, len(hit.text), hit.text[start:]))
+    return candidates
 
 
 PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
@@ -211,6 +249,8 @@ class PreparedContextBuilder:
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
         code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
+        if request.evidence_selection:
+            return self._select_evidence(request, memory_candidates)
         if request.include_code:
 
             def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
@@ -277,6 +317,15 @@ class PreparedContextBuilder:
         counters because both go through :meth:`_select_entries`.
         """
 
+        if request.evidence_selection:
+            build = self._select_evidence(request, memory_candidates)
+            return RecallBudgetView(
+                max_bytes=request.max_bytes,
+                delivered_items=len(build.origins),
+                truncated_items=0,
+                dropped_items=build.omissions.dropped_items,
+                unused_bytes=request.max_bytes - build.context.content_bytes,
+            )
         content, origins, omissions = self._select_entries(
             request=request,
             current_scope_id=current_scope_id,
@@ -292,6 +341,122 @@ class PreparedContextBuilder:
             truncated_items=omissions.truncated_items,
             dropped_items=omissions.dropped_items,
             unused_bytes=max(0, request.max_bytes - content_bytes),
+        )
+
+    def _select_evidence(
+        self, request: PrepareContextRequest, groups: Sequence[PreparedMemoryCandidates]
+    ) -> PreparedContextBuild:
+        stop = {
+            "a",
+            "an",
+            "the",
+            "of",
+            "to",
+            "in",
+            "on",
+            "for",
+            "from",
+            "by",
+            "with",
+            "and",
+            "or",
+            "is",
+            "was",
+            "were",
+            "are",
+            "be",
+            "been",
+            "that",
+            "this",
+            "these",
+            "those",
+            "it",
+            "its",
+            "as",
+            "at",
+            "not",
+            "no",
+            "can",
+            "may",
+            "we",
+            "our",
+            "their",
+            "they",
+            "than",
+            "which",
+            "into",
+            "using",
+            "used",
+            "use",
+        }
+
+        def terms(text):
+            return tuple(word for word in re.findall(r"[㐀-鿿]|[^\W_]+", text.casefold()) if word not in stop)
+
+        query = set(terms(request.query))
+        candidates = _evidence_fragments(groups)
+        counts = [Counter(terms(fragment.text)) for fragment in candidates]
+        frequency = Counter(term for count in counts for term in query if count[term])
+        scores = []
+        for index, count in enumerate(counts):
+            matched = query & count.keys()
+            score = sum(
+                math.log(1 + (len(candidates) + 1) / (frequency[term] + 1))
+                * count[term]
+                * 2.2
+                / (count[term] + 1.2 * (0.25 + 0.75 * sum(count.values()) / 35))
+                for term in matched
+            )
+            score *= 1 + len(matched) / max(1, len(query))
+            scores.append((score, index))
+
+        def render(fragments):
+            items = [
+                {
+                    "citation": {
+                        "scope_id": fragment.address.memory.scope_id,
+                        "memory_ref": fragment.address.memory.artifact.model_dump(mode="json"),
+                        "entry_id": fragment.address.entry_id,
+                        "entry_version_id": fragment.address.entry_version_id,
+                    },
+                    "content": fragment.text,
+                    "start": fragment.start,
+                    "end": fragment.end,
+                }
+                for fragment in fragments
+            ]
+            payload = json.dumps(
+                {"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":")
+            )
+            return f"{TRUST_POLICY}\n{_BEGIN_MARKER}\n{payload}\n{_END_MARKER}"
+
+        selected = []
+        seen = set()
+        for score, index in sorted(scores, key=lambda value: (-value[0], value[1])):
+            if score <= 0:
+                continue
+            fragment = candidates[index]
+            identity = (
+                fragment.address.memory.scope_id,
+                fragment.address.memory.artifact.artifact_id,
+                fragment.address.memory.artifact.revision,
+                fragment.address.entry_id,
+                fragment.address.entry_version_id,
+                fragment.start,
+                fragment.end,
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if len(render((*selected, fragment)).encode("utf-8")) <= request.max_bytes:
+                selected.append(fragment)
+        if not selected:
+            return PreparedContextBuild(context=self.empty(), origins=())
+        content = render(selected)
+        return PreparedContextBuild(
+            context=PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
+            origins=tuple(fragment.address for fragment in selected),
+            fragments=tuple(selected),
         )
 
     def _select_entries(

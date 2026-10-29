@@ -299,6 +299,8 @@ if TYPE_CHECKING:
 
     from powercontext.builtin.handoff_report.application import HandoffReportApplication
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
+    from powercontext.builtin.runtime.context_pack import ContextPack, ContextPackDelta
+    from powercontext.builtin.runtime.source_lifecycle import SourceLifecycleApplication
 
 
 class TopicMemorySearch(Protocol):
@@ -827,6 +829,15 @@ class ScopedContextApplication:
     def __init__(self, runtime: BuiltinRuntime, scope_id: str) -> None:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
+
+    async def prepare_incremental(
+        self, request: PrepareContextRequest, base_pack: ContextPack | None = None
+    ) -> ContextPack | ContextPackDelta:
+        """Prepare ordinary context and encode it against the receiver's previous pack."""
+        from powercontext.builtin.runtime.context_pack import ContextPack, ContextPackDelta
+
+        target = ContextPack.from_content((await self.prepare(request)).content)
+        return target if base_pack is None else ContextPackDelta.between(base_pack, target)
 
     async def prepare(
         self,
@@ -2971,6 +2982,8 @@ def _log_scheduled_processing(
 
 class BuiltinRuntime:
     """Add business-specific operations over composed built-in contexts."""
+
+    lifecycle: SourceLifecycleApplication
 
     def __init__(
         self,
