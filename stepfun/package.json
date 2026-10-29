@@ -1,0 +1,19 @@
+{
+  "name": "stepfun-mini-kb",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:server": "node server/index.mjs",
+    "dev:web": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "seekdb": "1.4.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}

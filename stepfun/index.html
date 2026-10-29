@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>端侧知识库 · 浏览器向量化 + seekdb 混合检索</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>端侧知识库</h1>
+      <p class="sub">向量化全部在浏览器本地完成，检索由 seekdb 的向量 + 全文混合索引返回。</p>
+      <div class="badges" id="badges">
+        <span class="badge" id="badge-backend">推理后端：检测中…</span>
+        <span class="badge" id="badge-model">模型：未加载</span>
+        <span class="badge" id="badge-docs">文档数：–</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <h2>1. 导入文档</h2>
+        <textarea id="import-text" rows="8" placeholder="粘贴文本，每个空行分隔为一段。也可以选择本地 .txt / .md 文件。"></textarea>
+        <div class="row">
+          <input type="file" id="import-file" accept=".txt,.md,.markdown" multiple />
+          <button id="btn-import" disabled>向量化并写入 seekdb</button>
+          <button id="btn-reset" class="ghost">清空库</button>
+        </div>
+        <p class="hint" id="import-status">等待模型加载…</p>
+      </section>
+
+      <section class="panel">
+        <h2>2. 检索</h2>
+        <div class="row">
+          <input type="text" id="query" placeholder="输入问题，例如：seekdb 支持什么检索？" />
+          <button id="btn-search" disabled>检索</button>
+        </div>
+        <p class="hint" id="search-status">–</p>
+        <table id="results">
+          <thead>
+            <tr><th>#</th><th>文档片段</th><th>距离</th><th>来源</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer>
+      <span id="foot-timing"></span>
+    </footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

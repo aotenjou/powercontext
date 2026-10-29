@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>量化与后端对比 · 端侧知识库</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>量化 / 推理后端对比</h1>
+      <p class="sub">
+        固定语料与查询集，逐个配置测量：模型体积、加载耗时、向量化吞吐、检索质量（Recall@3 / nDCG@3）与端到端延迟（取中位数）。
+      </p>
+      <div class="row">
+        <button id="btn-run">开始跑全部配置</button>
+        <button id="btn-json" class="ghost">导出 JSON</button>
+        <span class="hint" id="bench-status">等待开始</span>
+      </div>
+    </header>
+
+    <main class="single">
+      <section class="panel">
+        <h2>结果</h2>
+        <table id="bench-table">
+          <thead>
+            <tr>
+              <th>配置</th>
+              <th>实际后端</th>
+              <th>模型体积</th>
+              <th>加载 (ms)</th>
+              <th>向量化 (ms/段)</th>
+              <th>写入+刷新 (ms)</th>
+              <th>查询向量化 (ms)</th>
+              <th>seekdb 检索 (ms)</th>
+              <th>端到端 (ms)</th>
+              <th>混合 Recall@3</th>
+              <th>混合 nDCG@3</th>
+              <th>向量 Recall@3</th>
+              <th>向量 nDCG@3</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>说明</h2>
+        <ul class="notes">
+          <li>体积来自 HuggingFace 的模型文件 Content-Length；压缩比 = fp32 体积 / 目标体积。</li>
+          <li>质量用固定 6 条查询的标注集计算 Recall@3 与 nDCG@3（二值相关性）。</li>
+          <li>延迟为该配置下 6 条查询的中位数；写入耗时包含 seekdb 的 <code>refresh_index()</code>。</li>
+          <li>WASM 下 fp16 通常不可用，会自动退回 fp32，并在“实际后端/配置”列如实标注。</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="/src/bench.js"></script>
+  </body>
+</html>

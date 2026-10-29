@@ -1,0 +1,16 @@
+services:
+  seekdb:
+    image: oceanbase/seekdb:latest
+    container_name: seekdb
+    restart: unless-stopped
+    ports:
+      - "2881:2881"
+      - "2886:2886"
+    environment:
+      # 限制内存预算，避免在 WSL/小内存机器上把宿主吃满
+      SEEKDB_MEMORY_BUDGET: 1G
+    volumes:
+      - seekdb-data:/var/lib/oceanbase
+
+volumes:
+  seekdb-data:
