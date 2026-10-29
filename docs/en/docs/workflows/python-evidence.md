@@ -77,9 +77,12 @@ is disabled. `PreparedContextBuilder.build_scopes_result` exposes `fragments`: e
 half-open Python character offsets, and the exact original text. Origins correspond to the fragments. The complete
 trust policy, envelope, JSON, citations, and text count toward `max_bytes`. Selection mode processes Memory candidates.
 Selection weights the query subject and identifiers, and normalizes common inflections and related word roots.
+The candidates' retrieval score ordering also contributes to relevance; tied scores receive equal weight.
 Nearby evidence shares one literal range when retaining the intervening text costs less than another citation.
-Sentences and unpunctuated paragraphs that exceed the budget yield word-aligned original windows that include citation costs.
+Sentences and unpunctuated paragraphs that exceed the budget yield original windows starting at each word boundary,
+with citation costs included.
 Budget selection compares complete rendered alternatives, retaining the original whitespace and character offsets.
+Unicode line separators are escaped in JSON so the payload remains one line and decodes to the original text.
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` prepares the ordinary target context. The first
 call returns a `ContextPack`; subsequent calls return `ContextPackDelta` when the receiver's previous pack is supplied.

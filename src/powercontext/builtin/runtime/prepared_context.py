@@ -340,6 +340,8 @@ def _render_evidence_fragments(fragments: Sequence[PreparedEvidenceFragment]) ->
         for fragment in fragments
     ]
     payload = json.dumps({"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":"))
+    # Keep the envelope's JSON on one logical line, including Unicode line separators.
+    payload = payload.translate({0x85: r"\u0085", 0x2028: r"\u2028", 0x2029: r"\u2029"})
     return f"{TRUST_POLICY}\n{_BEGIN_MARKER}\n{payload}\n{_END_MARKER}"
 
 
@@ -348,7 +350,7 @@ def _bounded_evidence_windows(fragment: PreparedEvidenceFragment, max_bytes: int
     words = tuple(re.finditer(r"[㐀-鿿]|[^\W_]+", fragment.text))
     starts = [word.start() for word in words]
     windows = []
-    for word in words[::4]:
+    for word in words:
         start = word.start()
         while start > 0 and fragment.text[start - 1].isspace():
             start -= 1
@@ -636,17 +638,27 @@ class PreparedContextBuilder:
             }.values()
         )
         scores = _score_evidence_fragments(request.query, candidates, sentences)
-        bodies = {
-            (
-                group.scope_id,
-                hit.memory_ref.artifact_id,
-                hit.memory_ref.revision,
-                hit.entry_id,
-                hit.entry_version_id,
-            ): hit.text
-            for group in groups
-            for hit in group.hits
-        }
+        bodies = {}
+        retrieval_weights = {}
+        for group in groups:
+            ranked_scores = sorted({hit.score for hit in group.hits if math.isfinite(hit.score)}, reverse=True)
+            for hit in group.hits:
+                identity = (
+                    group.scope_id,
+                    hit.memory_ref.artifact_id,
+                    hit.memory_ref.revision,
+                    hit.entry_id,
+                    hit.entry_version_id,
+                )
+                bodies[identity] = hit.text
+                rank = ranked_scores.index(hit.score) if math.isfinite(hit.score) else 0
+                # Retain the retrieval stage's ordering without depending on its score scale.
+                weight = 1.0 / (rank + 1)
+                retrieval_weights[identity] = max(retrieval_weights.get(identity, 0.0), weight)
+        scores = [
+            score * retrieval_weights[_evidence_identity(fragment)]
+            for fragment, score in zip(candidates, scores, strict=True)
+        ]
 
         selected = _fit_evidence_fragments(candidates, scores, bodies, request.max_bytes)
         if not selected:

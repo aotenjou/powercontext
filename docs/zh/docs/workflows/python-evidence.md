@@ -72,9 +72,11 @@ Scope、Artifact 和 tag 条件在候选上限之前应用。返回 citation 使
 半开 Python 字符坐标及精确原文。Origins 与片段逐项对应。
 完整 trust policy、envelope、JSON、citation 和正文共同计入 `max_bytes`。选择模式处理 Memory 候选。
 选择时优先匹配查询的研究对象与标识，并归一化常见词形和相关词根。
+候选的召回分数排序也参与相关性评分；相同分数使用相同权重。
 保留中间原文比重复 citation 更省空间时，将邻近证据合并为同一原文区间。
-长句或无句号段落超过预算时，选择计入 citation 开销、按原词边界截取的原文窗口。
+长句或无句号段落超过预算时，从每个词边界生成原文窗口，并计入 citation 开销。
 预算选择比较完整渲染后的组合，同时保留原始空白和字符坐标。
+Unicode 行分隔符在 JSON 中转义，保证载荷为单行，解码后的原文不变。
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` 先准备普通目标上下文。
 首次返回 `ContextPack`；传入接收端上一包后，返回 `ContextPackDelta`。发送前先序列化数据包。

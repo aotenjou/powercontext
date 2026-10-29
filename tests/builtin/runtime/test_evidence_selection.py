@@ -16,6 +16,8 @@
 
 import json
 
+import pytest
+
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.memory import MemoryHit
 from powercontext.builtin.runtime import PrepareContextRequest
@@ -154,4 +156,69 @@ def test_late_evidence_in_an_oversized_unpunctuated_paragraph_remains_usable() -
         assert fragment.text == text[fragment.start : fragment.end]
         assert fragment.address.memory.scope_id == "scope"
     assert build.context.content is not None
+    assert build.context.content_bytes == len(build.context.content.encode("utf-8")) <= 700
+
+
+def test_word_windows_do_not_skip_fitting_evidence_after_an_oversized_word() -> None:
+    text = "background" * 65 + " cobalt sensor calibrated ignored"
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hit = MemoryHit(
+        memory_ref=reference, entry_id="entry", entry_version_id="version", text=text, score=1.0, matched_by=("fts",)
+    )
+    build = PreparedContextBuilder().build_scopes_result(
+        request=PrepareContextRequest(query="cobalt sensor calibrated", evidence_selection=True, max_bytes=650),
+        current_scope_id="scope",
+        memory_candidates=(PreparedMemoryCandidates(scope_id="scope", hits=(hit,)),),
+    )
+    assert build.context.status == "ready"
+    assert any("cobalt sensor calibrated" in fragment.text for fragment in build.fragments)
+    for fragment in build.fragments:
+        assert fragment.text == text[fragment.start : fragment.end]
+    assert build.context.content_bytes <= 650
+
+
+def test_retrieval_order_contributes_without_overriding_query_relevance() -> None:
+    texts = (
+        "The cobalt sensor is calibrated at 37 degrees and records temperature.",
+        "The amber sensor is calibrated at 19 degrees and records temperature.",
+    )
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hits = tuple(
+        MemoryHit(
+            memory_ref=reference,
+            entry_id=str(index),
+            entry_version_id="version",
+            text=text,
+            score=1.0 + index,
+            matched_by=("fts",),
+        )
+        for index, text in enumerate(texts)
+    )
+    builder = PreparedContextBuilder()
+    groups = (PreparedMemoryCandidates(scope_id="scope", hits=hits),)
+    for query, expected in (("sensor calibrated temperature", "1"), ("cobalt", "0")):
+        build = builder.build_scopes_result(
+            request=PrepareContextRequest(query=query, evidence_selection=True, max_bytes=700),
+            current_scope_id="scope",
+            memory_candidates=groups,
+        )
+        assert len(build.fragments) == 1
+        assert build.fragments[0].address.entry_id == expected
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_unicode_line_separators_preserve_a_readable_json_envelope(separator: str) -> None:
+    text = f"Ocean{separator}station records temperature."
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hit = MemoryHit(
+        memory_ref=reference, entry_id="entry", entry_version_id="version", text=text, score=1.0, matched_by=("fts",)
+    )
+    build = PreparedContextBuilder().build_scopes_result(
+        request=PrepareContextRequest(query="station temperature", evidence_selection=True, max_bytes=700),
+        current_scope_id="scope",
+        memory_candidates=(PreparedMemoryCandidates(scope_id="scope", hits=(hit,)),),
+    )
+    assert build.context.content is not None
+    item = json.loads(build.context.content.splitlines()[-2])["items"][0]
+    assert item["content"] == build.fragments[0].text == text
     assert build.context.content_bytes == len(build.context.content.encode("utf-8")) <= 700
