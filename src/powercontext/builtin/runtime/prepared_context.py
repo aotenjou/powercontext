@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -250,7 +251,11 @@ def _evidence_identity(fragment: PreparedEvidenceFragment) -> tuple[str, str, in
     )
 
 
-def _score_evidence_fragments(query_text: str, candidates: Sequence[PreparedEvidenceFragment]) -> list[float]:
+def _score_evidence_fragments(
+    query_text: str,
+    candidates: Sequence[PreparedEvidenceFragment],
+    sentences: Sequence[PreparedEvidenceFragment],
+) -> list[float]:
     query = set(_evidence_terms(query_text))
     subject = set(
         _evidence_terms(
@@ -273,12 +278,13 @@ def _score_evidence_fragments(query_text: str, candidates: Sequence[PreparedEvid
         )
     }
     counts = [Counter(_evidence_terms(fragment.text)) for fragment in candidates]
-    frequency = Counter(term for count in counts for term in query if count[term])
+    sentence_counts = [Counter(_evidence_terms(fragment.text)) for fragment in sentences]
+    frequency = Counter(term for count in sentence_counts for term in query if count[term])
     document_counts = {}
-    for fragment, count in zip(candidates, counts, strict=True):
+    for fragment, count in zip(sentences, sentence_counts, strict=True):
         document_counts.setdefault(_evidence_identity(fragment), Counter()).update(count)
     query_weights = {
-        term: math.log(1 + (len(candidates) + 1) / (frequency[term] + 1)) ** 1.5
+        term: math.log(1 + (len(sentences) + 1) / (frequency[term] + 1)) ** 1.5
         * (3.0 if term in identifiers else 0.3 if term.startswith("#") else 1.0)
         * (3.0 if term in subject else 1.0)
         for term in query
@@ -335,6 +341,37 @@ def _render_evidence_fragments(fragments: Sequence[PreparedEvidenceFragment]) ->
     ]
     payload = json.dumps({"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":"))
     return f"{TRUST_POLICY}\n{_BEGIN_MARKER}\n{payload}\n{_END_MARKER}"
+
+
+def _bounded_evidence_windows(fragment: PreparedEvidenceFragment, max_bytes: int) -> list[PreparedEvidenceFragment]:
+    """Offer literal word windows when a sentence cannot fit with its citation."""
+    words = tuple(re.finditer(r"[㐀-鿿]|[^\W_]+", fragment.text))
+    starts = [word.start() for word in words]
+    windows = []
+    for word in words[::4]:
+        start = word.start()
+        while start > 0 and fragment.text[start - 1].isspace():
+            start -= 1
+        low, high = start, len(fragment.text)
+        while low < high:
+            end = (low + high + 1) // 2
+            proposed = PreparedEvidenceFragment(
+                fragment.address, fragment.start + start, fragment.start + end, fragment.text[start:end]
+            )
+            if len(_render_evidence_fragments((proposed,)).encode("utf-8")) <= max_bytes:
+                low = end
+            else:
+                high = end - 1
+        index = bisect_right(starts, low) - 1
+        if index >= 0 and low < words[index].end():
+            low = words[index].start()
+        if low > start and fragment.text[start:low].strip():
+            windows.append(
+                PreparedEvidenceFragment(
+                    fragment.address, fragment.start + start, fragment.start + low, fragment.text[start:low]
+                )
+            )
+    return windows
 
 
 def _merge_evidence_fragments(
@@ -582,13 +619,23 @@ class PreparedContextBuilder:
     def _select_evidence(
         self, request: PrepareContextRequest, groups: Sequence[PreparedMemoryCandidates]
     ) -> PreparedContextBuild:
-        candidates = list(
+        sentences = list(
             {
                 (*_evidence_identity(fragment), fragment.start, fragment.end): fragment
                 for fragment in _evidence_fragments(groups)
             }.values()
         )
-        scores = _score_evidence_fragments(request.query, candidates)
+        candidates = []
+        for fragment in sentences:
+            candidates.append(fragment)
+            if len(_render_evidence_fragments((fragment,)).encode("utf-8")) > request.max_bytes:
+                candidates.extend(_bounded_evidence_windows(fragment, request.max_bytes))
+        candidates = list(
+            {
+                (*_evidence_identity(fragment), fragment.start, fragment.end): fragment for fragment in candidates
+            }.values()
+        )
+        scores = _score_evidence_fragments(request.query, candidates, sentences)
         bodies = {
             (
                 group.scope_id,

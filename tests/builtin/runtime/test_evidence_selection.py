@@ -135,3 +135,23 @@ def test_specific_research_subject_beats_generic_matching_outcomes() -> None:
     assert len(build.fragments) == 1
     assert build.fragments[0].address.entry_id == "0"
     assert build.fragments[0].text == texts[0]
+
+
+def test_late_evidence_in_an_oversized_unpunctuated_paragraph_remains_usable() -> None:
+    text = "General administrative background; " * 60 + "the cobalt sensor is calibrated at 37 degrees"
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hit = MemoryHit(
+        memory_ref=reference, entry_id="entry", entry_version_id="version", text=text, score=1.0, matched_by=("fts",)
+    )
+    build = PreparedContextBuilder().build_scopes_result(
+        request=PrepareContextRequest(query="cobalt sensor calibrated", evidence_selection=True, max_bytes=700),
+        current_scope_id="scope",
+        memory_candidates=(PreparedMemoryCandidates(scope_id="scope", hits=(hit,)),),
+    )
+    assert build.context.status == "ready"
+    assert any("cobalt sensor is calibrated at 37 degrees" in fragment.text for fragment in build.fragments)
+    for fragment in build.fragments:
+        assert fragment.text == text[fragment.start : fragment.end]
+        assert fragment.address.memory.scope_id == "scope"
+    assert build.context.content is not None
+    assert build.context.content_bytes == len(build.context.content.encode("utf-8")) <= 700

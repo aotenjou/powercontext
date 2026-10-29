@@ -73,6 +73,7 @@ Scope、Artifact 和 tag 条件在候选上限之前应用。返回 citation 使
 完整 trust policy、envelope、JSON、citation 和正文共同计入 `max_bytes`。选择模式处理 Memory 候选。
 选择时优先匹配查询的研究对象与标识，并归一化常见词形和相关词根。
 保留中间原文比重复 citation 更省空间时，将邻近证据合并为同一原文区间。
+长句或无句号段落超过预算时，选择计入 citation 开销、按原词边界截取的原文窗口。
 预算选择比较完整渲染后的组合，同时保留原始空白和字符坐标。
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` 先准备普通目标上下文。

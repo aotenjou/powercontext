@@ -78,6 +78,7 @@ half-open Python character offsets, and the exact original text. Origins corresp
 trust policy, envelope, JSON, citations, and text count toward `max_bytes`. Selection mode processes Memory candidates.
 Selection weights the query subject and identifiers, and normalizes common inflections and related word roots.
 Nearby evidence shares one literal range when retaining the intervening text costs less than another citation.
+Sentences and unpunctuated paragraphs that exceed the budget yield word-aligned original windows that include citation costs.
 Budget selection compares complete rendered alternatives, retaining the original whitespace and character offsets.
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` prepares the ordinary target context. The first
