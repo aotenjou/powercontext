@@ -131,6 +131,23 @@ class PreparedEvidenceFragment:
     text: str
 
 
+def _stem_evidence_term(term: str) -> str:
+    """Normalize common inflections while keeping numbers and short identifiers intact."""
+    if len(term) < 4 or not term.isascii() or not term.isalpha():
+        return term
+    if term.endswith("ies") and len(term) > 4:
+        term = term[:-3] + "y"
+    elif term.endswith("s") and not term.endswith(("ss", "us", "is")):
+        term = term[:-1]
+    for suffix in ("ing", "ed", "ion"):
+        if term.endswith(suffix) and len(term) - len(suffix) >= 4:
+            term = term[: -len(suffix)]
+            break
+    if term.endswith("e") and len(term) > 4:
+        term = term[:-1]
+    return term
+
+
 def _evidence_fragments(groups: Sequence[PreparedMemoryCandidates]) -> list[PreparedEvidenceFragment]:
     """Split candidate bodies into literal sentence ranges with exact scoped identities."""
     candidates = []
@@ -143,16 +160,188 @@ def _evidence_fragments(groups: Sequence[PreparedMemoryCandidates]) -> list[Prep
             )
             start = 0
             for boundary in re.finditer(
-                r"(?<=[.!?])\s+|(?<=[。！？])|\n+",  # noqa: RUF001 - recognize CJK sentence punctuation
+                r"(?<!\b[A-Za-z]\.)(?<!\bal\.)(?<=[.!?])\s+|(?<=[。！？])|\n+",  # noqa: RUF001 - recognize CJK sentence punctuation
                 hit.text,
             ):
-                end = boundary.start()
+                end = boundary.end()
                 if hit.text[start:end].strip():
                     candidates.append(PreparedEvidenceFragment(address, start, end, hit.text[start:end]))
                 start = boundary.end()
+                while start > 0 and hit.text[start - 1].isspace():
+                    start -= 1
             if hit.text[start:].strip():
                 candidates.append(PreparedEvidenceFragment(address, start, len(hit.text), hit.text[start:]))
     return candidates
+
+
+def _evidence_terms(text: str) -> tuple[str, ...]:
+    stop = {
+        "a",
+        "an",
+        "the",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "from",
+        "by",
+        "with",
+        "and",
+        "or",
+        "is",
+        "was",
+        "were",
+        "are",
+        "be",
+        "been",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "as",
+        "at",
+        "not",
+        "no",
+        "can",
+        "may",
+        "we",
+        "our",
+        "their",
+        "they",
+        "than",
+        "which",
+        "into",
+        "using",
+        "used",
+        "use",
+    }
+    return tuple(
+        _stem_evidence_term(word) for word in re.findall(r"[㐀-鿿]|[^\W_]+", text.casefold()) if word not in stop
+    )
+
+
+def _evidence_identity(fragment: PreparedEvidenceFragment) -> tuple[str, str, int, str, str]:
+    address = fragment.address
+    return (
+        address.memory.scope_id,
+        address.memory.artifact.artifact_id,
+        address.memory.artifact.revision,
+        address.entry_id,
+        address.entry_version_id,
+    )
+
+
+def _score_evidence_fragments(query: set[str], candidates: Sequence[PreparedEvidenceFragment]) -> list[float]:
+    counts = [Counter(_evidence_terms(fragment.text)) for fragment in candidates]
+    frequency = Counter(term for count in counts for term in query if count[term])
+    document_counts = {}
+    for fragment, count in zip(candidates, counts, strict=True):
+        document_counts.setdefault(_evidence_identity(fragment), Counter()).update(count)
+    document_frequency = Counter(term for count in document_counts.values() for term in query if count[term])
+    document_scores = {
+        address: sum(
+            math.log(1 + (len(document_counts) + 1) / (document_frequency[term] + 1)) for term in query if count[term]
+        )
+        / max(1, len(query))
+        for address, count in document_counts.items()
+    }
+    scores = []
+    for index, count in enumerate(counts):
+        matched = query & count.keys()
+        score = sum(
+            math.log(1 + (len(candidates) + 1) / (frequency[term] + 1))
+            * count[term]
+            * 2.2
+            / (count[term] + 1.2 * (0.25 + 0.75 * sum(count.values()) / 35))
+            for term in matched
+        )
+        score *= (1 + len(matched) / max(1, len(query))) * (
+            0.25 + document_scores[_evidence_identity(candidates[index])]
+        ) ** 2
+        # Findings usually carry evidence; methods and background merely introduce the topic.
+        text = candidates[index].text.casefold()
+        if re.search(r"\b(results?|conclusions?|conclude|found|find|demonstrat\w*|show\w*|reveal\w*)\b", text):
+            score *= 1.8
+        if re.search(r"^\s*(background|objective|context|methods?|design|setting|participants|sample)\b", text):
+            score *= 0.65
+        if candidates[index].start == 0 and len(counts) > 1:
+            score *= 0.6
+        scores.append(score)
+
+    return scores
+
+
+def _render_evidence_fragments(fragments: Sequence[PreparedEvidenceFragment]) -> str:
+    items = [
+        {
+            "citation": {
+                "scope_id": fragment.address.memory.scope_id,
+                "memory_ref": fragment.address.memory.artifact.model_dump(mode="json"),
+                "entry_id": fragment.address.entry_id,
+                "entry_version_id": fragment.address.entry_version_id,
+            },
+            "content": fragment.text,
+            "start": fragment.start,
+            "end": fragment.end,
+        }
+        for fragment in fragments
+    ]
+    payload = json.dumps({"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":"))
+    return f"{TRUST_POLICY}\n{_BEGIN_MARKER}\n{payload}\n{_END_MARKER}"
+
+
+def _merge_evidence_fragments(
+    candidates: Sequence[PreparedEvidenceFragment],
+    indices: Sequence[int],
+    bodies: dict[tuple[str, str, int, str, str], str],
+) -> list[PreparedEvidenceFragment]:
+    fragments = []
+    for index in sorted(indices):
+        fragment = candidates[index]
+        if fragments and fragments[-1].address == fragment.address and fragments[-1].end >= fragment.start:
+            previous = fragments.pop()
+            end = max(previous.end, fragment.end)
+            fragments.append(
+                PreparedEvidenceFragment(
+                    fragment.address, previous.start, end, bodies[_evidence_identity(fragment)][previous.start : end]
+                )
+            )
+        else:
+            fragments.append(fragment)
+    return fragments
+
+
+def _fit_evidence_fragments(
+    candidates: Sequence[PreparedEvidenceFragment],
+    scores: Sequence[float],
+    bodies: dict[tuple[str, str, int, str, str], str],
+    max_bytes: int,
+) -> list[PreparedEvidenceFragment]:
+    # Keep alternatives that spend the complete wire budget on coherent ranges.
+    # Adjacent sentences share one citation, including their original separators.
+    ranked = sorted(range(len(candidates)), key=lambda index: (-scores[index], index))[:96]
+    active = sorted(index for index in ranked if scores[index] > 0)
+    states = [(0.0, (), 0)]
+    for index in active:
+        expanded = list(states)
+        for score, indices, _ in states:
+            proposed = (*indices, index)
+            size = len(
+                _render_evidence_fragments(_merge_evidence_fragments(candidates, proposed, bodies)).encode("utf-8")
+            )
+            if size <= max_bytes:
+                expanded.append((score + scores[index] ** 1.5, proposed, size))
+        # Preserve budget diversity so a cheap prefix can admit later evidence.
+        best = {}
+        for state in expanded:
+            bucket = state[2] // 32
+            if bucket not in best or state[0] > best[bucket][0]:
+                best[bucket] = state
+        states = sorted(best.values(), key=lambda state: (-state[0], state[2], state[1]))[:64]
+    return _merge_evidence_fragments(candidates, max(states, key=lambda state: (state[0], -state[2]))[1], bodies)
 
 
 PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
@@ -346,113 +535,29 @@ class PreparedContextBuilder:
     def _select_evidence(
         self, request: PrepareContextRequest, groups: Sequence[PreparedMemoryCandidates]
     ) -> PreparedContextBuild:
-        stop = {
-            "a",
-            "an",
-            "the",
-            "of",
-            "to",
-            "in",
-            "on",
-            "for",
-            "from",
-            "by",
-            "with",
-            "and",
-            "or",
-            "is",
-            "was",
-            "were",
-            "are",
-            "be",
-            "been",
-            "that",
-            "this",
-            "these",
-            "those",
-            "it",
-            "its",
-            "as",
-            "at",
-            "not",
-            "no",
-            "can",
-            "may",
-            "we",
-            "our",
-            "their",
-            "they",
-            "than",
-            "which",
-            "into",
-            "using",
-            "used",
-            "use",
+        candidates = list(
+            {
+                (*_evidence_identity(fragment), fragment.start, fragment.end): fragment
+                for fragment in _evidence_fragments(groups)
+            }.values()
+        )
+        scores = _score_evidence_fragments(set(_evidence_terms(request.query)), candidates)
+        bodies = {
+            (
+                group.scope_id,
+                hit.memory_ref.artifact_id,
+                hit.memory_ref.revision,
+                hit.entry_id,
+                hit.entry_version_id,
+            ): hit.text
+            for group in groups
+            for hit in group.hits
         }
 
-        def terms(text):
-            return tuple(word for word in re.findall(r"[㐀-鿿]|[^\W_]+", text.casefold()) if word not in stop)
-
-        query = set(terms(request.query))
-        candidates = _evidence_fragments(groups)
-        counts = [Counter(terms(fragment.text)) for fragment in candidates]
-        frequency = Counter(term for count in counts for term in query if count[term])
-        scores = []
-        for index, count in enumerate(counts):
-            matched = query & count.keys()
-            score = sum(
-                math.log(1 + (len(candidates) + 1) / (frequency[term] + 1))
-                * count[term]
-                * 2.2
-                / (count[term] + 1.2 * (0.25 + 0.75 * sum(count.values()) / 35))
-                for term in matched
-            )
-            score *= 1 + len(matched) / max(1, len(query))
-            scores.append((score, index))
-
-        def render(fragments):
-            items = [
-                {
-                    "citation": {
-                        "scope_id": fragment.address.memory.scope_id,
-                        "memory_ref": fragment.address.memory.artifact.model_dump(mode="json"),
-                        "entry_id": fragment.address.entry_id,
-                        "entry_version_id": fragment.address.entry_version_id,
-                    },
-                    "content": fragment.text,
-                    "start": fragment.start,
-                    "end": fragment.end,
-                }
-                for fragment in fragments
-            ]
-            payload = json.dumps(
-                {"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":")
-            )
-            return f"{TRUST_POLICY}\n{_BEGIN_MARKER}\n{payload}\n{_END_MARKER}"
-
-        selected = []
-        seen = set()
-        for score, index in sorted(scores, key=lambda value: (-value[0], value[1])):
-            if score <= 0:
-                continue
-            fragment = candidates[index]
-            identity = (
-                fragment.address.memory.scope_id,
-                fragment.address.memory.artifact.artifact_id,
-                fragment.address.memory.artifact.revision,
-                fragment.address.entry_id,
-                fragment.address.entry_version_id,
-                fragment.start,
-                fragment.end,
-            )
-            if identity in seen:
-                continue
-            seen.add(identity)
-            if len(render((*selected, fragment)).encode("utf-8")) <= request.max_bytes:
-                selected.append(fragment)
+        selected = _fit_evidence_fragments(candidates, scores, bodies, request.max_bytes)
         if not selected:
             return PreparedContextBuild(context=self.empty(), origins=())
-        content = render(selected)
+        content = _render_evidence_fragments(selected)
         return PreparedContextBuild(
             context=PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
             origins=tuple(fragment.address for fragment in selected),

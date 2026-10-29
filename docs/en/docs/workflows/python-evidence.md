@@ -36,6 +36,7 @@ the complete file's SHA-256, the one-based physical page number, and its text. R
 and ingest the observations through the runtime. A revised PDF gets new page identities; historical references keep
 their original revision. With page evidence processed into Memory, `await search_pdf_pages(memory, question, limit=20)`
 returns distinct, readable page citations using offline lexical retrieval and financial vocabulary expansion.
+Ranking matches company identities and reporting years, and favors relevant statement headings for financial metrics.
 
 Definitions can be registered in a local Source registry, or transported with `manifest_for_definition` and
 `project_source_for_transport` through the existing ingestion API. Capture stores evidence; configure generation or
@@ -75,6 +76,8 @@ Set `PrepareContextRequest(evidence_selection=True, ...)` to select query-releva
 is disabled. `PreparedContextBuilder.build_scopes_result` exposes `fragments`: each holds a scoped `MemoryEntryAddress`,
 half-open Python character offsets, and the exact original text. Origins correspond to the fragments. The complete
 trust policy, envelope, JSON, citations, and text count toward `max_bytes`. Selection mode processes Memory candidates.
+Selection normalizes common word inflections and combines adjacent evidence into literal ranges sharing one citation.
+Budget selection compares complete rendered alternatives, retaining the original whitespace and character offsets.
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` prepares the ordinary target context. The first
 call returns a `ContextPack`; subsequent calls return `ContextPackDelta` when the receiver's previous pack is supplied.

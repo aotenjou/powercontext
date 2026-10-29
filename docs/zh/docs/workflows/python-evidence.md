@@ -34,6 +34,7 @@ async def capture_rows(content: bytes):
 注册 `PDF_PAGE_SOURCE_DEFINITION`，再通过 Runtime 导入 observation。PDF 修订产生新的页身份，
 历史引用仍指向原修订。页面证据处理为 Memory 后，
 `await search_pdf_pages(memory, question, limit=20)` 使用离线词项检索和财报术语扩展，返回不同页面的可读 citation。
+排序匹配公司身份与报告年度，并优先选择与财务指标相关的报表标题。
 
 可以在本地 Source registry 注册 Definition，也可以通过 `manifest_for_definition` 和
 `project_source_for_transport` 使用既有 ingestion API 传输。采集负责保存证据；将符合条件的证据转为 Memory，
@@ -70,6 +71,8 @@ Scope、Artifact 和 tag 条件在候选上限之前应用。返回 citation 使
 `PreparedContextBuilder.build_scopes_result` 返回的 `fragments` 包含带 Scope 的 `MemoryEntryAddress`、
 半开 Python 字符坐标及精确原文。Origins 与片段逐项对应。
 完整 trust policy、envelope、JSON、citation 和正文共同计入 `max_bytes`。选择模式处理 Memory 候选。
+选择时归一化常见词形，将相邻证据合并为共享同一 citation 的原文区间。
+预算选择比较完整渲染后的组合，同时保留原始空白和字符坐标。
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` 先准备普通目标上下文。
 首次返回 `ContextPack`；传入接收端上一包后，返回 `ContextPackDelta`。发送前先序列化数据包。
