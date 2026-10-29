@@ -217,9 +217,25 @@ def _evidence_terms(text: str) -> tuple[str, ...]:
         "using",
         "used",
         "use",
+        "very",
+        "once",
+        "also",
+        "have",
+        "has",
+        "had",
+        "does",
+        "do",
+        "did",
+        "however",
     }
-    return tuple(
+    normalized = tuple(
         _stem_evidence_term(word) for word in re.findall(r"[㐀-鿿]|[^\W_]+", text.casefold()) if word not in stop
+    )
+    # Shared word roots provide weaker matches for forms such as fibrosis/fibrotic.
+    return tuple(
+        feature
+        for word in normalized
+        for feature in ((word, "#" + word[:5]) if word.isascii() and word.isalpha() and len(word) >= 6 else (word,))
     )
 
 
@@ -234,28 +250,56 @@ def _evidence_identity(fragment: PreparedEvidenceFragment) -> tuple[str, str, in
     )
 
 
-def _score_evidence_fragments(query: set[str], candidates: Sequence[PreparedEvidenceFragment]) -> list[float]:
+def _score_evidence_fragments(query_text: str, candidates: Sequence[PreparedEvidenceFragment]) -> list[float]:
+    query = set(_evidence_terms(query_text))
+    subject = set(
+        _evidence_terms(
+            re.split(
+                r"\b(?:is|are|was|were|can|has|have|binds|regulates|inhibits|causes|leads|induces|prevents|increases|decreases|reduces|promotes|suppresses|triggers|maintains|possess|segregate)\b",
+                query_text,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+        )
+    )
+    identifiers = {
+        _stem_evidence_term(word.casefold())
+        for word in re.findall(r"[^\W_]+", query_text)
+        if len(word) >= 2
+        and (
+            word.isupper()
+            or any(letter.isupper() for letter in word[1:])
+            or (any(letter.isalpha() for letter in word) and any(letter.isdigit() for letter in word))
+        )
+    }
     counts = [Counter(_evidence_terms(fragment.text)) for fragment in candidates]
     frequency = Counter(term for count in counts for term in query if count[term])
     document_counts = {}
     for fragment, count in zip(candidates, counts, strict=True):
         document_counts.setdefault(_evidence_identity(fragment), Counter()).update(count)
-    document_frequency = Counter(term for count in document_counts.values() for term in query if count[term])
+    query_weights = {
+        term: math.log(1 + (len(candidates) + 1) / (frequency[term] + 1)) ** 1.5
+        * (3.0 if term in identifiers else 0.3 if term.startswith("#") else 1.0)
+        * (3.0 if term in subject else 1.0)
+        for term in query
+        if frequency[term]
+    }
+    query = set(query_weights)
     document_scores = {
-        address: sum(
-            math.log(1 + (len(document_counts) + 1) / (document_frequency[term] + 1)) for term in query if count[term]
-        )
-        / max(1, len(query))
+        address: sum(query_weights[term] for term in query if count[term]) / max(1.0, sum(query_weights.values()))
         for address, count in document_counts.items()
     }
     scores = []
     for index, count in enumerate(counts):
         matched = query & count.keys()
         score = sum(
-            math.log(1 + (len(candidates) + 1) / (frequency[term] + 1))
+            query_weights[term]
             * count[term]
             * 2.2
-            / (count[term] + 1.2 * (0.25 + 0.75 * sum(count.values()) / 35))
+            / (
+                count[term]
+                + 1.2 * (0.65 + 0.35 * sum(value for term, value in count.items() if not term.startswith("#")) / 35)
+            )
             for term in matched
         )
         score *= (1 + len(matched) / max(1, len(query))) * (
@@ -301,16 +345,19 @@ def _merge_evidence_fragments(
     fragments = []
     for index in sorted(indices):
         fragment = candidates[index]
-        if fragments and fragments[-1].address == fragment.address and fragments[-1].end >= fragment.start:
-            previous = fragments.pop()
+        if fragments and fragments[-1].address == fragment.address:
+            previous = fragments[-1]
             end = max(previous.end, fragment.end)
-            fragments.append(
-                PreparedEvidenceFragment(
-                    fragment.address, previous.start, end, bodies[_evidence_identity(fragment)][previous.start : end]
-                )
+            combined = PreparedEvidenceFragment(
+                fragment.address, previous.start, end, bodies[_evidence_identity(fragment)][previous.start : end]
             )
-        else:
-            fragments.append(fragment)
+            # A short intervening passage can cost less than a second full citation.
+            if previous.end >= fragment.start or len(_render_evidence_fragments((combined,)).encode("utf-8")) <= len(
+                _render_evidence_fragments((previous, fragment)).encode("utf-8")
+            ):
+                fragments[-1] = combined
+                continue
+        fragments.append(fragment)
     return fragments
 
 
@@ -541,7 +588,7 @@ class PreparedContextBuilder:
                 for fragment in _evidence_fragments(groups)
             }.values()
         )
-        scores = _score_evidence_fragments(set(_evidence_terms(request.query)), candidates)
+        scores = _score_evidence_fragments(request.query, candidates)
         bodies = {
             (
                 group.scope_id,

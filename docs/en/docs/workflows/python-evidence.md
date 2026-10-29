@@ -76,7 +76,8 @@ Set `PrepareContextRequest(evidence_selection=True, ...)` to select query-releva
 is disabled. `PreparedContextBuilder.build_scopes_result` exposes `fragments`: each holds a scoped `MemoryEntryAddress`,
 half-open Python character offsets, and the exact original text. Origins correspond to the fragments. The complete
 trust policy, envelope, JSON, citations, and text count toward `max_bytes`. Selection mode processes Memory candidates.
-Selection normalizes common word inflections and combines adjacent evidence into literal ranges sharing one citation.
+Selection weights the query subject and identifiers, and normalizes common inflections and related word roots.
+Nearby evidence shares one literal range when retaining the intervening text costs less than another citation.
 Budget selection compares complete rendered alternatives, retaining the original whitespace and character offsets.
 
 `ScopedContextApplication.prepare_incremental(request, base_pack=None)` prepares the ordinary target context. The first

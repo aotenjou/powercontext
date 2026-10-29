@@ -87,3 +87,51 @@ def test_abbreviations_and_original_whitespace_are_retained_in_evidence() -> Non
         == text[fragment.start : fragment.end]
         == "\n  Results: Treatment inhibited C. difficile growth.  \n"
     )
+
+
+def test_short_intervening_text_is_cheaper_than_repeating_a_citation() -> None:
+    text = "Drug inhibited bacterial growth. Calibration finished. Drug inhibits bacterial infection."
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hit = MemoryHit(
+        memory_ref=reference, entry_id="entry", entry_version_id="version", text=text, score=1.0, matched_by=("fts",)
+    )
+    build = PreparedContextBuilder().build_scopes_result(
+        request=PrepareContextRequest(query="drug inhibiting growth infection", evidence_selection=True, max_bytes=650),
+        current_scope_id="scope",
+        memory_candidates=(PreparedMemoryCandidates(scope_id="scope", hits=(hit,)),),
+    )
+    assert len(build.fragments) == 1
+    fragment = build.fragments[0]
+    assert (fragment.start, fragment.end, fragment.text) == (0, len(text), text)
+    assert build.context.content_bytes <= 650
+
+
+def test_specific_research_subject_beats_generic_matching_outcomes() -> None:
+    texts = (
+        "We found that KIN7 mutations alter pancreatic insulin secretion and cause neonatal hypoglycaemia.",
+        "We found an increased risk of metabolic disease developing by age 14 years in a large cohort.",
+    )
+    reference = ArtifactRef(family="memory", artifact_id="memory", revision=1)
+    hits = tuple(
+        MemoryHit(
+            memory_ref=reference,
+            entry_id=str(index),
+            entry_version_id="version",
+            text=text,
+            score=1.0,
+            matched_by=("fts",),
+        )
+        for index, text in enumerate(texts)
+    )
+    build = PreparedContextBuilder().build_scopes_result(
+        request=PrepareContextRequest(
+            query="A mutation in KIN7 leads to an increased risk of metabolic disease by age 14 years.",
+            evidence_selection=True,
+            max_bytes=700,
+        ),
+        current_scope_id="scope",
+        memory_candidates=(PreparedMemoryCandidates(scope_id="scope", hits=hits),),
+    )
+    assert len(build.fragments) == 1
+    assert build.fragments[0].address.entry_id == "0"
+    assert build.fragments[0].text == texts[0]
