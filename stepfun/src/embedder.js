@@ -40,6 +40,20 @@ export async function measureModelBytes(dtype) {
  * 端侧 embedding。device 缺省时自动检测（webgpu 优先），失败降级 wasm。
  * 返回实际生效的 devicce 与 dtype，便于界面如实展示。
  */
+export const MIRROR_HOST = "https://hf-mirror.com";
+
+/** 在指定 host 上创建 pipeline；失败时抛出，由调用方决定是否换源 */
+async function buildPipeline({ dev, dtype, onProgress }) {
+  const dl = (info) => {
+    if (!onProgress) return;
+    if (info?.status === "progress" && info.file) {
+      const pct = Number.isFinite(info.progress) ? info.progress : 0;
+      onProgress({ phase: "download", file: info.file, pct });
+    }
+  };
+  return pipeline("feature-extraction", MODEL_ID, { device: dev, dtype, progress_callback: dl });
+}
+
 export async function createEmbedder({ dtype = "fp16", device, onProgress } = {}) {
   const preferred = device || detectBackend();
   const attempts = preferred === "webgpu" ? ["webgpu", "wasm"] : ["wasm"];
@@ -48,33 +62,31 @@ export async function createEmbedder({ dtype = "fp16", device, onProgress } = {}
   let usedDtype = dtype;
   let lastErr = null;
 
-  const dl = (info) => {
-    if (!onProgress) return;
-    if (info?.status === "progress" && info.file) {
-      const pct = Number.isFinite(info.progress) ? info.progress : 0;
-      onProgress({ phase: "download", file: info.file, pct });
-    }
-  };
-
   for (const dev of attempts) {
-    try {
-      extractor = await pipeline("feature-extraction", MODEL_ID, { device: dev, dtype, progress_callback: dl });
-      usedBackend = dev;
-      break;
-    } catch (err) {
-      lastErr = err;
-      // fp16 在部分 WASM 后端不可用，退回 fp32 再试一次
-      if (dtype !== "fp32" && dev === "wasm") {
-        try {
-          extractor = await pipeline("feature-extraction", MODEL_ID, { device: dev, dtype: "fp32", progress_callback: dl });
-          usedBackend = dev;
-          usedDtype = "fp32";
-          break;
-        } catch (e2) {
-          lastErr = e2;
+    for (const host of [null, MIRROR_HOST]) {
+      try {
+        if (host) env.remoteHost = host;
+        extractor = await buildPipeline({ dev, dtype, onProgress });
+        usedBackend = dev;
+        if (host) console.info("[embedder] 主站不可用，已切换到镜像", host);
+        break;
+      } catch (err) {
+        lastErr = err;
+        // fp16 在部分 WASM 后端不可用，退回 fp32 再试一次
+        if (dtype !== "fp32" && dev === "wasm") {
+          try {
+            if (host) env.remoteHost = host;
+            extractor = await buildPipeline({ dev, dtype: "fp32", onProgress });
+            usedBackend = dev;
+            usedDtype = "fp32";
+            break;
+          } catch (e2) {
+            lastErr = e2;
+          }
         }
       }
     }
+    if (extractor) break;
   }
   if (!extractor) throw lastErr || new Error("模型加载失败");
 

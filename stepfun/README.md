@@ -119,7 +119,7 @@ npm run dev:web                 # http://localhost:5173
 ## 已知限制
 
 - 端侧推理速度依赖设备；本机 WSL2 + headless Chrome 的绝对数值不代表用户机器。
-- 首屏需下载模型（fp16 约 224 MB），弱网下等待明显；已支持浏览器缓存。
+- 首屏需下载模型（fp16 约 224 MB），弱网下等待明显；已支持浏览器缓存。主站 `huggingface.co` 不可达时会自动切到 `hf-mirror.com` 重试。
 - 集合只在 `database=test` 下建一个固定集合 `kb`，多知识库切换未实现。
 - 图片内容支持（题目中的可选扩展）未实现。
 - seekdb 容器内存预算由 compose 环境变量控制，小内存机器建议同时限制 Docker 资源。
